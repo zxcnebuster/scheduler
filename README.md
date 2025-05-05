@@ -44,67 +44,147 @@
 
 # Pseudocode for scheduler
 
-````function schedule_orders(order_lines_to_schedule, accounts, current_date, existing_schedule):
-    new_purchase_tasks = []
-    new_review_tasks = []
-    unprocessed_order_lines = list(order_lines_to_schedule) # Make a copy
+````FUNCTION generateSchedule(newOrdersToSchedule: Order[], existingSchedule: ScheduledPurchase[], allAccounts: Account[], accountAvailability: Map<accountId, { unavailableDates: Date[] }>, today: Date): ScheduledPurchase[]
 
-    day_offset = 0
-    while unprocessed_order_lines:
-        target_date = current_date + timedelta(days=day_offset)
-        purchases_made_today_by_account = defaultdict(int)
-        books_purchased_today_by_account = defaultdict(set) # account_id -> {book_id}
+    // Internal state for the current scheduling run
+    // Key: accountId -> dateString (YYYY-MM-DD) -> AccountDailyStatus
+    LET currentSchedulingRunState = new Map<string, Map<string, AccountDailyStatus>>();
 
-        # Consider existing tasks for this day
-        for task in existing_schedule.purchase_tasks:
-            if task.date == target_date and task.status != 'MISSED': # Only count active tasks
-                purchases_made_today_by_account[task.account_id] += 1
-                books_purchased_today_by_account[task.account_id].add(task.book_id)
+    // 1. Initialize currentSchedulingRunState based on existingSchedule and accountAvailability
+    FOR EACH purchase IN existingSchedule:
+        IF purchase.status IS NOT 'missed': // Only consider active commitments
+            LET dateStr = toDateString(purchase.purchaseDate)
+            IF NOT currentSchedulingRunState.has(purchase.accountId):
+                currentSchedulingRunState.set(purchase.accountId, new Map())
+            IF NOT currentSchedulingRunState.get(purchase.accountId).has(dateStr):
+                currentSchedulingRunState.get(purchase.accountId).set(dateStr, { purchaseCount: 0, booksPurchasedToday: new Set() })
 
-        # Sort accounts to balance load? Or just iterate. Let's iterate for now.
-        # For "minimizing purchases per account per day", we might want to sort accounts
-        # by fewest purchases already scheduled for the day.
+            LET dailyStatus = currentSchedulingRunState.get(purchase.accountId).get(dateStr)
+            dailyStatus.purchaseCount++
+            dailyStatus.booksPurchasedToday.add(purchase.bookId)
 
-        temp_lines_to_remove = []
-        for order_line in unprocessed_order_lines:
-            scheduled_this_line = False
-            # Try to find an account for this order_line on target_date
-            for account in accounts: # Maybe shuffle accounts or sort by current load
-                if not account.is_available(target_date): continue # FR 4.1
+    FOR EACH accountId IN accountAvailability.keys():
+        FOR EACH unavailableDate IN accountAvailability.get(accountId).unavailableDates:
+            LET dateStr = toDateString(unavailableDate)
+            IF NOT currentSchedulingRunState.has(accountId):
+                currentSchedulingRunState.set(accountId, new Map())
+            IF NOT currentSchedulingRunState.get(accountId).has(dateStr):
+                 currentSchedulingRunState.get(accountId).set(dateStr, { purchaseCount: 0, booksPurchasedToday: new Set() })
+            currentSchedulingRunState.get(accountId).get(dateStr).unavailable = true
 
-                # Constraint 1.1: Daily limit
-                if purchases_made_today_by_account[account.id] >= account.daily_limit:
-                    continue
 
-                # Constraint 1.2: Same book per account per day
-                if order_line.book_id in books_purchased_today_by_account[account.id]:
-                    continue
+    // 2. Collect all individual review items from newOrders that need scheduling
+    LET tasksToSchedule = []
+    FOR EACH order IN newOrdersToSchedule:
+        FOR EACH item IN order.items:
+            // Ensure we don't try to re-schedule an item already in existingSchedule (unless it was marked 'missed' and handled upstream)
+            IF NOT existingSchedule.some(p => p.reviewId === item.reviewId AND p.status !== 'missed'):
+                tasksToSchedule.push({
+                    reviewId: item.reviewId,
+                    bookId: item.bookId,
+                    orderId: order.id,
+                    clientId: order.clientId,
+                    // We might add priority here later, e.g., based on order.createdAt
+                })
 
-                # If we can schedule:
-                purchase_task = create_purchase_task(order_line, account, target_date)
-                new_purchase_tasks.append(purchase_task)
+    // Optional: Sort tasksToSchedule. For now, process in given order.
+    // Sorting could be by order creation date, or by book "demand" if a book appears in many tasks.
 
-                purchases_made_today_by_account[account.id] += 1
-                books_purchased_today_by_account[account.id].add(order_line.book_id)
+    LET newlyScheduledPurchases = []
 
-                review_date = target_date + timedelta(days=MIN_REVIEW_DELAY)
-                review_task = create_review_task(purchase_task, review_date)
-                new_review_tasks.append(review_task)
+    // 3. For each task, find the earliest possible slot
+    FOR EACH task IN tasksToSchedule:
+        LET earliestSlotFound = null // { accountId, purchaseDate, reviewDate }
+        LET attemptedDays = 0
 
-                temp_lines_to_remove.append(order_line)
-                scheduled_this_line = True
-                break # Move to next order_line
+        // Start searching from 'today'
+        LET currentAttemptDate = new Date(today)
 
-        for line in temp_lines_to_remove:
-            unprocessed_order_lines.remove(line)
+        WHILE earliestSlotFound IS NULL AND attemptedDays < MAX_SCHEDULING_ATTEMPT_DAYS:
+            LET dateStr = toDateString(currentAttemptDate)
+            LET potentialSlotsThisDay = [] // Store {accountId, currentLoad}
 
-        if not temp_lines_to_remove and unprocessed_order_lines: # Made no progress this day for remaining lines
-            day_offset += 1
-        elif not unprocessed_order_lines: # All done
-            break
-        # If some progress was made, stay on same day_offset to try and fill more with remaining accounts/lines
+            FOR EACH account IN allAccounts:
+                // Get or initialize daily status for this account on currentAttemptDate
+                IF NOT currentSchedulingRunState.has(account.id):
+                    currentSchedulingRunState.set(account.id, new Map())
+                IF NOT currentSchedulingRunState.get(account.id).has(dateStr):
+                    currentSchedulingRunState.get(account.id).set(dateStr, { purchaseCount: 0, booksPurchasedToday: new Set() })
 
-    # Add new tasks to existing_schedule
-    existing_schedule.add_tasks(new_purchase_tasks, new_review_tasks)
-    return existing_schedule```
+                LET dailyStatus = currentSchedulingRunState.get(account.id).get(dateStr)
+
+                // CHECK CONSTRAINTS:
+                // 1.1 Account availability
+                IF dailyStatus.unavailable IS TRUE:
+                    CONTINUE FOR_LOOP_ACCOUNTS
+
+                // 1.2 Max 3 purchases per account per day
+                IF dailyStatus.purchaseCount >= MAX_PURCHASES_PER_ACCOUNT_PER_DAY:
+                    CONTINUE FOR_LOOP_ACCOUNTS
+
+                // 1.3 Only one copy of the same book per account per day
+                IF dailyStatus.booksPurchasedToday.has(task.bookId):
+                    CONTINUE FOR_LOOP_ACCOUNTS
+
+                // If all checks pass, this account is a candidate for this task on currentAttemptDate
+                potentialSlotsThisDay.push({ accountId: account.id, currentLoad: dailyStatus.purchaseCount })
+
+            // END FOR_LOOP_ACCOUNTS for currentAttemptDate
+
+            IF potentialSlotsThisDay.length > 0:
+                // 1.4 Minimize daily load (pick account with fewest purchases today from candidates)
+                potentialSlotsThisDay.sort((a, b) => a.currentLoad - b.currentLoad)
+                LET chosenAccountSlot = potentialSlotsThisDay[0]
+
+                LET purchaseDate = new Date(currentAttemptDate)
+                LET reviewDate = new Date(purchaseDate)
+                reviewDate.setDate(purchaseDate.getDate() + MIN_REVIEW_DELAY_DAYS) // 1.5 Review timing
+
+                earliestSlotFound = {
+                    accountId: chosenAccountSlot.accountId,
+                    purchaseDate: purchaseDate,
+                    reviewDate: reviewDate
+                }
+            ELSE:
+                // No slot found today, try next day
+                currentAttemptDate.setDate(currentAttemptDate.getDate() + 1)
+                attemptedDays++
+
+        // END WHILE_LOOP for finding slot for current task
+
+        IF earliestSlotFound IS NOT NULL:
+            LET scheduledItem: ScheduledPurchase = {
+                purchaseId: task.reviewId, // Using reviewId as purchaseId for simplicity
+                reviewId: task.reviewId,
+                orderId: task.orderId,
+                bookId: task.bookId,
+                accountId: earliestSlotFound.accountId,
+                purchaseDate: earliestSlotFound.purchaseDate,
+                reviewDate: earliestSlotFound.reviewDate,
+                status: 'pending',
+                client: task.clientId
+            }
+            newlyScheduledPurchases.push(scheduledItem)
+
+            // CRITICAL: Update currentSchedulingRunState for the chosen slot
+            // This ensures subsequent tasks in THIS scheduling run respect this new commitment.
+            LET chosenDateStr = toDateString(earliestSlotFound.purchaseDate)
+            LET chosenAccountDailyStatus = currentSchedulingRunState.get(earliestSlotFound.accountId).get(chosenDateStr)
+            chosenAccountDailyStatus.purchaseCount++
+            chosenAccountDailyStatus.booksPurchasedToday.add(task.bookId)
+        ELSE:
+            // Could not schedule this task within MAX_SCHEDULING_ATTEMPT_DAYS
+            // Log this event: "Failed to schedule task for reviewId: ${task.reviewId}, bookId: ${task.bookId}"
+            // This task will remain unscheduled.
+            // Consider adding it to a list of "unschedulable" tasks to return.
+            ADD_TO_UNSCHEDULABLE_LOG(task) // Placeholder for error handling
+
+    // END FOR_LOOP for tasksToSchedule
+
+    RETURN newlyScheduledPurchases // These are only the items scheduled in THIS run
+END FUNCTION
+
+// Helper function (will be implemented in TS)
+FUNCTION toDateString(date: Date): string
+    RETURN date.toISOString().split('T')[0] // YYYY-MM-DD```
 ````
