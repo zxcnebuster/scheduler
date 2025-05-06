@@ -26,21 +26,12 @@
 ## Key Entities:
 
 - Order: Contains multiple OrderLines.
-- OrderLine: Represents a request for a specific Book and a Review to be written for it. Could be multiple OrderLines for the same book in an order or across orders.
+- Order Line: Represents a request for a specific Book and a Review to be written for it. Could be multiple OrderLines for the same book in an order or across orders.
 - Book: Identified by something unique (e.g., ASIN).
-- AmazonAccount: Has a daily purchase limit.
-- PurchaseTask: A specific book to be bought by a specific account on a specific day.
-- ReviewTask: A review to be posted for a specific purchased book on a specific day.
+- Amazon Account: Has a daily purchase limit.
+- Purchase Task: A specific book to be bought by a specific account on a specific day.
+- Review Task: A review to be posted for a specific purchased book on a specific day.
 - Schedule: The overall plan, containing all PurchaseTasks and ReviewTasks.
-
-## DSs:
-
-- Order: order_id, list_of_order_lines.
-- OrderLine: book_id (or book_asin), client_id, review_text_placeholder.
-- AmazonAccount: account_id, daily_purchase_limit (initially 3).
-- PurchaseTask: date, account_id, book_id, order_id, order_line_id, status (PENDING, COMPLETED, MISSED).
-- ReviewTask: date, purchase_task_id, book_id, order_id, order_line_id, status.
-- Schedule: Maybe a dictionary mapping dates to lists of tasks, or separate lists for purchase and review tasks. A list of PurchaseTask objects and ReviewTask objects seems most flexible.
 
 # Pseudocode for scheduler
 
