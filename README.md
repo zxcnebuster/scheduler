@@ -35,7 +35,11 @@
 
 # Pseudocode for scheduler
 
-````FUNCTION generateSchedule(newOrdersToSchedule: Order[], existingSchedule: ScheduledPurchase[], allAccounts: Account[], accountAvailability: Map<accountId, { unavailableDates: Date[] }>, today: Date): ScheduledPurchase[]
+````
+const MAX_PURCHASES_PER_ACCOUNT_PER_DAY = 3;
+const MIN_REVIEW_DELAY_DAYS = 4;
+const MAX_SCHEDULING_ATTEMPT_DAYS = 365;
+FUNCTION generateSchedule(newOrdersToSchedule: Order[], existingSchedule: ScheduledPurchase[], allAccounts: Account[], accountAvailability: Map<accountId, { unavailableDates: Date[] }>, today: Date): ScheduledPurchase[]
 
     // Internal state for the current scheduling run
     // Key: accountId -> dateString (YYYY-MM-DD) -> AccountDailyStatus
