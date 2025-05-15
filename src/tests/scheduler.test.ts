@@ -330,7 +330,6 @@ describe("PurchaseScheduler", () => {
       logError: jest.fn(),
       logWarning: jest.fn(),
     };
-    //re-initialize scheduler with the mock logger for this specific test
     const localScheduler = new PurchaseScheduler(mockLogger);
 
     const purchaseDate = today;
@@ -346,17 +345,17 @@ describe("PurchaseScheduler", () => {
         status: "pending",
       },
     ];
+    //acc1 has 1 existing purchase ('bookx').
     //mark acc1 unavailable on the day of its existing purchase
     const accountAvailability: AccountAvailability = {
       acc1: { unavailableDates: [purchaseDate] },
     };
+    //initial load for today: acc1=1 (bookx, available due to override), acc2=0, acc3=0
 
-    //tasks that would fill up acc1 if it's considered available after override
-    //acc1 starts with 1 existing purchase ('bookx').
     const tasks = [
-      createTask("fill1", "bookF1"), //should go to acc1 (total 2 for acc1 today: bookx, bookf1)
-      createTask("fill2", "bookF2"), //should go to acc1 (total 3 for acc1 today: bookx, bookf1, bookf2)
-      createTask("overflow", "bookOF"), //should go to acc2 (acc1 full for today)
+      createTask("fill1", "bookF1"), // -> acc2 (load 0) or acc3 (load 0). Let's assume acc2.
+      createTask("fill2", "bookF2"), // -> acc3 (load 0, vs acc1 load 1, acc2 load 1)
+      createTask("overflow", "bookOF"), // -> acc1 (load 1, vs acc2 load 1, acc3 load 1 - picks first)
     ];
 
     const { scheduledItems } = localScheduler.generateSchedule(
@@ -379,20 +378,53 @@ describe("PurchaseScheduler", () => {
       (item) => item.reviewId === "overflow"
     );
 
-    expect(fill1Item?.accountId).toBe("acc1");
+    //after scheduling:
+    //acc1: bookx (existing), bookof (new) -> load 2
+    //acc2: bookf1 (new) -> load 1
+    //acc3: bookf2 (new) -> load 1
+
+    expect(fill1Item?.accountId).toBe("acc2"); // acc2 is preferred (0 load) over acc1 (1 load)
     expect(dateToDateString(fill1Item!.purchaseDate)).toBe(
       dateToDateString(today)
     );
 
-    expect(fill2Item?.accountId).toBe("acc1");
+    expect(fill2Item?.accountId).toBe("acc3"); // acc3 is preferred (0 load) over acc1 (1 load) and acc2 (now 1 load)
     expect(dateToDateString(fill2Item!.purchaseDate)).toBe(
       dateToDateString(today)
     );
 
-    expect(overflowItem?.accountId).toBe("acc2"); //because acc1 is full for today (1 existing + 2 new)
+    expect(overflowItem?.accountId).toBe("acc1"); // acc1, acc2, acc3 all have 1 load (from previous new items or existing). acc1 is chosen as it's first.
     expect(dateToDateString(overflowItem!.purchaseDate)).toBe(
       dateToDateString(today)
     );
+
+    //verify total purchases per account for today
+    const todayItems = scheduledItems.concat(
+      existingSchedule.filter(
+        (p) => dateToDateString(p.purchaseDate) === dateToDateString(today)
+      )
+    );
+    expect(
+      todayItems.filter(
+        (item) =>
+          item.accountId === "acc1" &&
+          dateToDateString(item.purchaseDate) === dateToDateString(today)
+      )
+    ).toHaveLength(2); //bookx, bookof
+    expect(
+      todayItems.filter(
+        (item) =>
+          item.accountId === "acc2" &&
+          dateToDateString(item.purchaseDate) === dateToDateString(today)
+      )
+    ).toHaveLength(1); //bookf1
+    expect(
+      todayItems.filter(
+        (item) =>
+          item.accountId === "acc3" &&
+          dateToDateString(item.purchaseDate) === dateToDateString(today)
+      )
+    ).toHaveLength(1); //bookf2
   });
 
   it('should correctly use the provided "today" parameter as starting date', () => {
